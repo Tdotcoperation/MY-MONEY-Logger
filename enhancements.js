@@ -33,9 +33,10 @@
       const ctx = unlockAudio();
       if (!ctx) return;
       const now = ctx.currentTime;
-      const spec = kind === 'delete' ? [390, 0.080, 0.075] :
-        kind === 'confirm' ? [820, 0.135, 0.095] :
-        kind === 'done' ? [980, 0.19, 0.10] : [740, 0.075, 0.085];
+      // Boost oscillator gain about 2.5x. Keep peaks below unity to avoid clipping.
+      const spec = kind === 'delete' ? [390, 0.080, 0.1875] :
+        kind === 'confirm' ? [820, 0.135, 0.2375] :
+        kind === 'done' ? [980, 0.19, 0.25] : [740, 0.075, 0.2125];
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = 'sine';
