@@ -6,13 +6,24 @@
   const SOUND_KEY = 'my-money-logger:touch-sound';
   let soundEnabled = localStorage.getItem(SOUND_KEY) !== 'off';
   let audio = null;
+  let limiter = null;
   let previousDone = false;
   let lastTouch = 0;
 
   function getAudio() {
     const Audio = window.AudioContext || window.webkitAudioContext;
     if (!Audio) return null;
-    if (!audio || audio.state === 'closed') audio = new Audio();
+    if (!audio || audio.state === 'closed') {
+      audio = new Audio();
+      // Repeated rapid taps can overlap. A compressor helps keep the mixed output controlled.
+      limiter = audio.createDynamicsCompressor();
+      limiter.threshold.value = -12;
+      limiter.knee.value = 6;
+      limiter.ratio.value = 12;
+      limiter.attack.value = 0.002;
+      limiter.release.value = 0.09;
+      limiter.connect(audio.destination);
+    }
     return audio;
   }
 
@@ -33,10 +44,12 @@
       const ctx = unlockAudio();
       if (!ctx) return;
       const now = ctx.currentTime;
-      // Boost oscillator gain about 2.5x. Keep peaks below unity to avoid clipping.
+      // 4x the previous oscillator gain, capped at 0.85 to avoid individual-signal clipping.
+      // The compressor above controls overlapping taps; device volume still controls output.
       const spec = kind === 'delete' ? [390, 0.080, 0.1875] :
         kind === 'confirm' ? [820, 0.135, 0.2375] :
         kind === 'done' ? [980, 0.19, 0.25] : [740, 0.075, 0.2125];
+      const peak = Math.min(0.85, spec[2] * 4);
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = 'sine';
@@ -44,10 +57,10 @@
       if (kind === 'delete') osc.frequency.exponentialRampToValueAtTime(290, now + spec[1]);
       if (kind === 'done') osc.frequency.exponentialRampToValueAtTime(1240, now + spec[1]);
       gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(spec[2], now + 0.009);
+      gain.gain.exponentialRampToValueAtTime(peak, now + 0.009);
       gain.gain.exponentialRampToValueAtTime(0.0001, now + spec[1]);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(limiter);
       osc.start(now);
       osc.stop(now + spec[1] + 0.015);
       osc.addEventListener('ended', () => { osc.disconnect(); gain.disconnect(); }, {once:true});
