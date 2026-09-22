@@ -7,33 +7,53 @@
   let soundEnabled = localStorage.getItem(SOUND_KEY) !== 'off';
   let audio = null;
   let previousDone = false;
+  let lastTouch = 0;
+
+  function getAudio() {
+    const Audio = window.AudioContext || window.webkitAudioContext;
+    if (!Audio) return null;
+    if (!audio || audio.state === 'closed') audio = new Audio();
+    return audio;
+  }
+
+  // Mobile browsers and Android WebViews normally require audio to be resumed
+  // directly from a real user gesture, rather than from asynchronous UI updates.
+  function unlockAudio() {
+    if (!soundEnabled) return null;
+    try {
+      const ctx = getAudio();
+      if (ctx && ctx.state !== 'running') void ctx.resume().catch(() => {});
+      return ctx;
+    } catch (_) { return null; }
+  }
 
   function tone(kind = 'tap') {
     if (!soundEnabled) return;
     try {
-      const Audio = window.AudioContext || window.webkitAudioContext;
-      if (!Audio) return;
-      audio ||= new Audio();
-      if (audio.state === 'suspended') void audio.resume();
-      const now = audio.currentTime;
-      const osc = audio.createOscillator();
-      const gain = audio.createGain();
-      const settings = kind === 'delete' ? [360, 0.055, 0.022] : kind === 'confirm' ? [720, 0.10, 0.025] : kind === 'done' ? [880, 0.16, 0.024] : [660, 0.045, 0.016];
+      const ctx = unlockAudio();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+      const spec = kind === 'delete' ? [390, 0.080, 0.075] :
+        kind === 'confirm' ? [820, 0.135, 0.095] :
+        kind === 'done' ? [980, 0.19, 0.10] : [740, 0.075, 0.085];
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(settings[0], now);
-      if (kind === 'done') osc.frequency.exponentialRampToValueAtTime(1100, now + settings[1]);
+      osc.frequency.setValueAtTime(spec[0], now);
+      if (kind === 'delete') osc.frequency.exponentialRampToValueAtTime(290, now + spec[1]);
+      if (kind === 'done') osc.frequency.exponentialRampToValueAtTime(1240, now + spec[1]);
       gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(settings[2], now + 0.006);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + settings[1]);
-      osc.connect(gain).connect(audio.destination);
+      gain.gain.exponentialRampToValueAtTime(spec[2], now + 0.009);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + spec[1]);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
       osc.start(now);
-      osc.stop(now + settings[1] + 0.008);
+      osc.stop(now + spec[1] + 0.015);
       osc.addEventListener('ended', () => { osc.disconnect(); gain.disconnect(); }, {once:true});
-    } catch (_) { /* Audio unavailable: app remains fully usable. */ }
+    } catch (_) { /* Unsupported or blocked audio must never interrupt a transaction. */ }
   }
 
-  // The existing application listens for input#memo. Keep that exact contract,
-  // moving the field rather than saving an independent unencrypted copy.
+  // Keep the original application's #memo input contract and encrypted storage.
   function improveAmount() {
     const amountPage = app.querySelector('.entry-layout .money-row');
     if (!amountPage) return;
@@ -44,10 +64,7 @@
       field.remove();
     }
     const number = amountPage.querySelector('.money-number');
-    if (number) {
-      number.style.visibility = 'visible';
-      number.style.opacity = '1';
-    }
+    if (number) { number.style.visibility = 'visible'; number.style.opacity = '1'; }
   }
 
   function improveConfirmation() {
@@ -84,11 +101,11 @@
     button.id = 'touch-sound-toggle';
     button.className = 'setting-item touch-toggle';
     button.setAttribute('aria-pressed', String(soundEnabled));
-    button.innerHTML = '<span class="s-icon" aria-hidden="true">♪</span><span>터치음<div class="caption" style="margin-top:5px">버튼과 키패드를 터치할 때 짧은 소리를 재생합니다.</div></span><span class="touch-state"></span>';
+    button.innerHTML = '<span class="s-icon" aria-hidden="true">♪</span><span>터치음<div class="caption" style="margin-top:5px">버튼과 키패드를 터치할 때 짧은 소리를 재생합니다. 켜면 시험 소리가 납니다.</div></span><span class="touch-state"></span>';
     button.querySelector('.touch-state').textContent = soundEnabled ? '켜짐' : '꺼짐';
     const foot = main.querySelector('.footnote');
     if (foot) { foot.before(title); title.after(button); }
-    else { main.append(title, button); }
+    else main.append(title, button);
   }
 
   function improve() {
@@ -99,26 +116,37 @@
     if (isDone && !previousDone) tone('done');
     previousDone = isDone;
   }
-  // Rendering replaces #app contents; enhance each new screen once without
-  // intercepting or changing the accounting and encrypted-storage logic.
-  const observer = new MutationObserver(() => improve());
+  // The app re-renders by replacing its contents; respond to each new screen.
+  const observer = new MutationObserver(improve);
   observer.observe(app, {childList:true, subtree:true});
   improve();
-  app.addEventListener('click', event => {
-    const toggle = event.target.closest('#touch-sound-toggle');
-    if (toggle) {
-      soundEnabled = !soundEnabled;
-      localStorage.setItem(SOUND_KEY, soundEnabled ? 'on' : 'off');
-      toggle.setAttribute('aria-pressed', String(soundEnabled));
-      toggle.querySelector('.touch-state').textContent = soundEnabled ? '켜짐' : '꺼짐';
-      if (soundEnabled) tone('confirm');
+
+  // Handle the earliest usable gesture to reliably unlock mobile audio.
+  // Play on pointerdown, with click as the accessibility/older-browser fallback.
+  function handleSound(event) {
+    const button = event.target.closest('button');
+    if (!button || button.disabled || !app.contains(button)) return;
+    const now = Date.now();
+    if (event.type === 'click' && now - lastTouch < 400) return;
+    if (event.type === 'pointerdown') lastTouch = now;
+    if (button.id === 'touch-sound-toggle') {
+      // The toggle itself is handled on click so enabling sound gives feedback.
       return;
     }
-    const button = event.target.closest('button');
-    if (!button || button.disabled) return;
     const action = button.dataset.action;
-    if (action === 'number' && button.dataset.id === '⌫' || action === 'pin-delete') tone('delete');
+    if ((action === 'number' && button.dataset.id === '⌫') || action === 'pin-delete') tone('delete');
     else if (['amount-next', 'approve', 'done-home', 'modal-confirm'].includes(action)) tone('confirm');
     else tone('tap');
+  }
+  app.addEventListener('pointerdown', handleSound, {capture:true, passive:true});
+  app.addEventListener('click', handleSound, {capture:true});
+  app.addEventListener('click', event => {
+    const toggle = event.target.closest('#touch-sound-toggle');
+    if (!toggle) return;
+    soundEnabled = !soundEnabled;
+    localStorage.setItem(SOUND_KEY, soundEnabled ? 'on' : 'off');
+    toggle.setAttribute('aria-pressed', String(soundEnabled));
+    toggle.querySelector('.touch-state').textContent = soundEnabled ? '켜짐' : '꺼짐';
+    if (soundEnabled) tone('confirm');
   }, {capture:true});
 })();
