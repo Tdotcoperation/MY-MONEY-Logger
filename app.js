@@ -181,7 +181,7 @@
     else {mainNav=true;body=tab==='home'?home():tab==='records'?records():settings();}
     app.innerHTML=header(back)+body+(mainNav?nav():'')+modalView()+(toastText?`<div class="toast" role="status">${esc(toastText)}</div>`:'');
   }
-  function start(kind){const result=replay(data);flow={kind,mode:kind==='withdraw'?'borrow':'normal',loanId:result.loans.find(l=>l.remaining>0)?.id||null,memo:''};amount='0';screen='amount';render();}
+  function start(kind){const result=replay(data);const outstanding=result.loans.find(l=>l.remaining>0);flow={kind,mode:kind==='withdraw'?'borrow':(kind==='deposit'&&outstanding?'repay':'normal'),loanId:outstanding?.id||null,memo:''};amount='0';screen='amount';render();}
   function back(){
     if(screen==='confirm'){screen='amount';}
     else if(screen==='pin-action'){if(flow?.auth==='commit')screen='confirm';else {screen='main';flow=null;}}
